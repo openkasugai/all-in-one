@@ -1,0 +1,7 @@
+driver/nvidia/NVIDIA-Linux-*.run
+kind/values
+dci
+work
+build
+src/*
+*.swp

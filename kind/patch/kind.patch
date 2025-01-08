@@ -1,0 +1,456 @@
+diff --git a/images/base/Dockerfile b/images/base/Dockerfile
+index 6a047999..c323a302 100644
+--- a/images/base/Dockerfile
++++ b/images/base/Dockerfile
+@@ -20,7 +20,7 @@
+ # start from debian slim, this image is reasonably small as a starting point
+ # for a kubernetes node image, it doesn't contain much (anything?) we don't need
+ # this stage will install basic files and packages
+-ARG BASE_IMAGE=debian:bookworm-slim
++ARG BASE_IMAGE=ubuntu:jammy-20240808
+ FROM $BASE_IMAGE as base
+ 
+ # copy in static files
+@@ -108,11 +108,10 @@ COPY --chmod=0755 scripts/third_party/gimme/gimme /usr/local/bin/
+ COPY --chmod=0755 scripts/target-cc /usr/local/bin/
+ # tools needed at build-time only
+ # first ensure we can install packages for both architectures
+-RUN dpkg --add-architecture arm64 && dpkg --add-architecture amd64 \
++RUN dpkg --add-architecture amd64 \
+     && clean-install bash ca-certificates curl git make pkg-config \
+-    crossbuild-essential-amd64 crossbuild-essential-arm64 \
+-    libseccomp-dev:amd64 libseccomp-dev:arm64
+-# set by makefile to .go-version
++    crossbuild-essential-amd64 \
++    libseccomp-dev:amd64
+ ARG GO_VERSION
+ RUN eval "$(gimme "${GO_VERSION}")" \
+     && export GOTOOLCHAIN="go${GO_VERSION}" \
+@@ -121,7 +120,8 @@ RUN eval "$(gimme "${GO_VERSION}")" \
+ 
+ # stage for building containerd
+ FROM go-build as build-containerd
+-ARG TARGETARCH GO_VERSION
++ARG TARGETARCH
++ARG GO_VERSION
+ ARG CONTAINERD_VERSION="v1.7.15"
+ ARG CONTAINERD_CLONE_URL="https://github.com/containerd/containerd"
+ # we don't build with optional snapshotters, we never select any of these
+@@ -139,7 +139,8 @@ RUN git clone --filter=tree:0 "${CONTAINERD_CLONE_URL}" /containerd \
+ 
+ # stage for building runc
+ FROM go-build as build-runc
+-ARG TARGETARCH GO_VERSION
++ARG TARGETARCH
++ARG GO_VERSION
+ ARG RUNC_VERSION="v1.1.12"
+ ARG RUNC_CLONE_URL="https://github.com/opencontainers/runc"
+ RUN git clone --filter=tree:0 "${RUNC_CLONE_URL}" /runc \
+@@ -153,7 +154,8 @@ RUN git clone --filter=tree:0 "${RUNC_CLONE_URL}" /runc \
+ 
+ # stage for building crictl
+ FROM go-build as build-crictl
+-ARG TARGETARCH GO_VERSION
++ARG TARGETARCH
++ARG GO_VERSION
+ ARG CRI_TOOLS_CLONE_URL="https://github.com/kubernetes-sigs/cri-tools"
+ ARG CRICTL_VERSION="v1.29.0"
+ RUN git clone --filter=tree:0 "${CRI_TOOLS_CLONE_URL}" /cri-tools \
+@@ -167,7 +169,8 @@ RUN git clone --filter=tree:0 "${CRI_TOOLS_CLONE_URL}" /cri-tools \
+ 
+ # stage for building cni-plugins
+ FROM go-build as build-cni
+-ARG TARGETARCH GO_VERSION
++ARG TARGETARCH
++ARG GO_VERSION
+ ARG CNI_PLUGINS_VERSION="v1.4.1"
+ ARG CNI_PLUGINS_CLONE_URL="https://github.com/containernetworking/plugins"
+ RUN git clone --filter=tree:0 "${CNI_PLUGINS_CLONE_URL}" /cni-plugins \
+@@ -188,7 +191,8 @@ RUN git clone --filter=tree:0 "${CNI_PLUGINS_CLONE_URL}" /cni-plugins \
+ 
+ # stage for building containerd-fuse-overlayfs
+ FROM go-build as build-fuse-overlayfs
+-ARG TARGETARCH GO_VERSION
++ARG TARGETARCH
++ARG GO_VERSION
+ ARG CONTAINERD_FUSE_OVERLAYFS_VERSION="v1.0.8"
+ ARG CONTAINERD_FUSE_OVERLAYFS_CLONE_URL="https://github.com/containerd/fuse-overlayfs-snapshotter"
+ RUN git clone --filter=tree:0 "${CONTAINERD_FUSE_OVERLAYFS_CLONE_URL}" /fuse-overlayfs-snapshotter \
+diff --git a/images/base/files/etc/default/kubelet b/images/base/files/etc/default/kubelet
+index 1e82369d..4999328d 100644
+--- a/images/base/files/etc/default/kubelet
++++ b/images/base/files/etc/default/kubelet
+@@ -1 +1 @@
+-KUBELET_EXTRA_ARGS=--runtime-cgroups=/system.slice/containerd.service
+\ No newline at end of file
++KUBELET_EXTRA_ARGS="--runtime-cgroups=/system.slice/crio.service --container-runtime-endpoint=/var/run/crio/crio.sock"
+diff --git a/images/base/files/usr/local/bin/clean-install b/images/base/files/usr/local/bin/clean-install
+index b0b861c3..bfeff602 100755
+--- a/images/base/files/usr/local/bin/clean-install
++++ b/images/base/files/usr/local/bin/clean-install
+@@ -26,7 +26,6 @@ if [ $# = 0 ]; then
+ fi
+ 
+ apt-get update
+-apt-get upgrade -y
+ apt-get install -y --no-install-recommends "$@"
+ apt-get clean -y
+ rm -rf \
+diff --git a/pkg/cluster/internal/create/actions/copykubeconfig/copy.go b/pkg/cluster/internal/create/actions/copykubeconfig/copy.go
+new file mode 100644
+index 00000000..0e04f2b0
+--- /dev/null
++++ b/pkg/cluster/internal/create/actions/copykubeconfig/copy.go
+@@ -0,0 +1,65 @@
++package copykubeconfig
++
++import (
++	"sigs.k8s.io/kind/pkg/cluster/constants"
++	"sigs.k8s.io/kind/pkg/errors"
++
++	"sigs.k8s.io/kind/pkg/cluster/nodeutils"
++
++	"sigs.k8s.io/kind/pkg/cluster/internal/create/actions"
++)
++
++type Action struct{}
++
++// NewAction returns a new action for copy kubeadm for nodes
++func NewAction() actions.Action {
++	return &Action{}
++}
++
++// Execute runs the action
++func (a *Action) Execute(ctx *actions.ActionContext) error {
++	ctx.Status.Start("Copying /etc/kubernetes/admin.conf to workers")
++	allNodes, err := ctx.Nodes()
++	if err != nil {
++		return err
++	}
++
++	// get the target node for this task
++	controlPlanes, err := nodeutils.ControlPlaneNodes(allNodes)
++	if err != nil {
++		return err
++	}
++	node := controlPlanes[0] // kind expects at least one always
++
++	// get worker nodes
++	workers, err := nodeutils.SelectNodesByRole(allNodes, constants.WorkerNodeRoleValue)
++	if err != nil {
++		return err
++	}
++
++	// copy the config
++	for _, otherNode := range workers {
++		if err := nodeutils.CopyNodeToNode(node, otherNode, "/etc/kubernetes/admin.conf"); err != nil {
++			return errors.Wrap(err, "failed to copy admin kubeconfig")
++		}
++	}
++
++	for _, n := range workers {
++		if err := n.Command("mkdir", "/root/.kube/").Run(); err != nil {
++			return errors.Wrap(err, "failed to create /root/.kube/config")
++		}
++		if err := n.Command("cp", "/etc/kubernetes/admin.conf", "/root/.kube/config").Run(); err != nil {
++			return errors.Wrap(err, "failed to create /root/.kube/config")
++		}
++		if err := n.Command("mkdir", "/etc/k8s_worker/").Run(); err != nil {
++			return errors.Wrap(err, "failed to create /etc/k8s_worker/config")
++		}
++		if err := n.Command("cp", "/etc/kubernetes/admin.conf", "/etc/k8s_worker/config").Run(); err != nil {
++			return errors.Wrap(err, "failed to create /etc/k8s_worker/config")
++		}
++	}
++
++	// mark success
++	ctx.Status.End(true)
++	return nil
++}
+diff --git a/pkg/cluster/internal/create/actions/runcontrollers/run.go b/pkg/cluster/internal/create/actions/runcontrollers/run.go
+new file mode 100644
+index 00000000..e0f62f22
+--- /dev/null
++++ b/pkg/cluster/internal/create/actions/runcontrollers/run.go
+@@ -0,0 +1,46 @@
++package runcontrollers
++
++import (
++	"sigs.k8s.io/kind/pkg/errors"
++
++	"sigs.k8s.io/kind/pkg/cluster/nodeutils"
++
++	"sigs.k8s.io/kind/pkg/cluster/internal/create/actions"
++)
++
++type Action struct{}
++
++// NewAction returns a new action for import configmap of dci
++func NewAction() actions.Action {
++	return &Action{}
++}
++
++// Execute runs the action
++func (a *Action) Execute(ctx *actions.ActionContext) error {
++	ctx.Status.Start("setup /root/script and exec run_controllers.sh")
++	allNodes, err := ctx.Nodes()
++	if err != nil {
++		return err
++	}
++
++	// copy scripts to /root/scripts
++	for _, n := range allNodes {
++		if err := n.Command("cp", "-rf", "/root/controller/test/script", "/root/").Run(); err != nil {
++			return errors.Wrap(err, "failed to copy to /root/script")
++		}
++	}
++
++	// get the target node for this task
++	controlPlanes, err := nodeutils.ControlPlaneNodes(allNodes)
++	if err != nil {
++		return err
++	}
++
++	if err := controlPlanes[0].Command("bash", "-ci", "cd /root/script/ && ./run_controllers.sh").Run(); err != nil {
++		return errors.Wrap(err, "failed to exec run_controllers.sh")
++	}
++
++	// mark success
++	ctx.Status.End(true)
++	return nil
++}
+diff --git a/pkg/cluster/internal/create/actions/runinfocollector/run.go b/pkg/cluster/internal/create/actions/runinfocollector/run.go
+new file mode 100644
+index 00000000..a8783b76
+--- /dev/null
++++ b/pkg/cluster/internal/create/actions/runinfocollector/run.go
+@@ -0,0 +1,54 @@
++package runinfocollector
++
++import (
++	"sigs.k8s.io/kind/pkg/cluster/constants"
++	"sigs.k8s.io/kind/pkg/errors"
++
++	"sigs.k8s.io/kind/pkg/cluster/nodeutils"
++
++	"sigs.k8s.io/kind/pkg/cluster/internal/create/actions"
++)
++
++type Action struct{}
++
++// NewAction returns a new action for import configmap of dci
++func NewAction() actions.Action {
++	return &Action{}
++}
++
++// Execute runs the action
++func (a *Action) Execute(ctx *actions.ActionContext) error {
++	ctx.Status.Start("Apply configmap for DCI controllers")
++	allNodes, err := ctx.Nodes()
++	if err != nil {
++		return err
++	}
++
++	// get worker nodes
++	workers, err := nodeutils.SelectNodesByRole(allNodes, constants.WorkerNodeRoleValue)
++	if err != nil {
++		return err
++	}
++
++	// run k8s-config.sh
++	firstWorker := workers[0]
++	if err := firstWorker.Command("bash", "-c", "cd /root/controller/src/tools/InfoCollector/infrainfo && ./k8s-config.sh create").Run(); err != nil {
++		return errors.Wrap(err, "failed to apply ConfigMaps")
++	}
++
++	// run InfoCollector
++	for _, n := range workers {
++		if err := n.Command("ln", "-sf", "/root/controller/src/fpgadb/test/bitstream_id-config-table.json",
++				    "/root/controller/src/tools/InfoCollector/bitstream_id-config-table.json").Run(); err != nil {
++			return errors.Wrap(err, "failed to create symlink of bitstream_id-config-table.json")
++		}
++
++		if err := n.Command("bash", "-ci", "cd /root/controller/src/tools/InfoCollector/ && make all").Run(); err != nil {
++			return errors.Wrap(err, "failed to run InfoCollector")
++		}
++	}
++
++	// mark success
++	ctx.Status.End(true)
++	return nil
++}
+diff --git a/pkg/cluster/internal/create/actions/setupcrd/setup.go b/pkg/cluster/internal/create/actions/setupcrd/setup.go
+new file mode 100644
+index 00000000..3d1257a5
+--- /dev/null
++++ b/pkg/cluster/internal/create/actions/setupcrd/setup.go
+@@ -0,0 +1,63 @@
++package setupcrd
++
++import (
++	"sigs.k8s.io/kind/pkg/cluster/constants"
++	"sigs.k8s.io/kind/pkg/errors"
++
++	"sigs.k8s.io/kind/pkg/cluster/nodeutils"
++
++	"sigs.k8s.io/kind/pkg/cluster/internal/create/actions"
++)
++
++type Action struct{}
++
++// NewAction returns a new action for import configmap of dci
++func NewAction() actions.Action {
++	return &Action{}
++}
++
++// Execute runs the action
++func (a *Action) Execute(ctx *actions.ActionContext) error {
++	ctx.Status.Start("Setup CRDs for DCI controllers")
++	allNodes, err := ctx.Nodes()
++	if err != nil {
++		return err
++	}
++
++	// get worker nodes
++	workers, err := nodeutils.SelectNodesByRole(allNodes, constants.WorkerNodeRoleValue)
++	if err != nil {
++		return err
++	}
++
++	// setup CRDs
++	firstWorker := workers[0]
++	export := `export PKG_CONFIG_PATH=${PKG_CONFIG_PATH}:/root/openkasugai-hardware-drivers/lib/DPDK/dpdk/lib/x86_64-linux-gnu/pkgconfig \
++&& export PKG_CONFIG_PATH=${PKG_CONFIG_PATH}:/root/openkasugai-hardware-drivers/lib/build/pkgconfig \
++&& export LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/usr/local/lib/fpgalib/dpdk/lib/x86_64-linux-gnu \
++&& export CGO_CFLAGS_ALLOW=-mrtm \
++&& `
++
++	if err := firstWorker.Command("bash", "-ci", export + "cd /root/controller/src/DeviceInfo && make install").Run(); err != nil {
++		return errors.Wrap(err, "failed to create CRD of DeviceInfo")
++	}
++	if err := firstWorker.Command("bash", "-ci", export + "cd /root/controller/src/PCIeConnection && make install").Run(); err != nil {
++		return errors.Wrap(err, "failed to create CRD of PCIeConnection")
++	}
++	if err := firstWorker.Command("bash", "-ci", export + "cd /root/controller/src/EthernetConnection && make install").Run(); err != nil {
++		return errors.Wrap(err, "failed to create CRD of EthernetConnection")
++	}
++	if err := firstWorker.Command("bash", "-ci", export + "cd /root/controller/src/FPGAFunction && make install").Run(); err != nil {
++		return errors.Wrap(err, "failed to create CRD of FPGAFunction")
++	}
++	if err := firstWorker.Command("bash", "-ci", export + "cd /root/controller/src/GPUFunction && make install").Run(); err != nil {
++		return errors.Wrap(err, "failed to create CRD of GPUFunction")
++	}
++	if err := firstWorker.Command("bash", "-ci", export + "cd /root/controller/src/CPUFunction && make install").Run(); err != nil {
++		return errors.Wrap(err, "failed to create CRD of CPUFunction")
++	}
++
++	// mark success
++	ctx.Status.End(true)
++	return nil
++}
+diff --git a/pkg/cluster/internal/create/actions/updatecerts/update.go b/pkg/cluster/internal/create/actions/updatecerts/update.go
+new file mode 100644
+index 00000000..56f30025
+--- /dev/null
++++ b/pkg/cluster/internal/create/actions/updatecerts/update.go
+@@ -0,0 +1,47 @@
++package updatecerts
++
++import (
++	"os"
++
++	"sigs.k8s.io/kind/pkg/errors"
++	"sigs.k8s.io/kind/pkg/cluster/internal/create/actions"
++)
++
++type Action struct{}
++
++// NewAction returns a new action for import configmap of dci
++func NewAction() actions.Action {
++	return &Action{}
++}
++
++// Execute runs the action
++func (a *Action) Execute(ctx *actions.ActionContext) error {
++	ctx.Status.Start("Update /etc/ssl/certs for container registry")
++	certsUrl := os.Getenv("KIND_CERT_URL")
++	if certsUrl != "" {
++		allNodes, err := ctx.Nodes()
++		if err != nil {
++			return err
++		}
++
++		// copy scripts to /root/scripts
++		for _, n := range allNodes {
++			if err := n.Command("curl", "-o", "ca.crt", certsUrl).Run(); err != nil {
++				return errors.Wrap(err, "failed to get cert file")
++			}
++			if err := n.Command("cp", "ca.crt", "/etc/ssl/certs").Run(); err != nil {
++				return errors.Wrap(err, "failed to copy cert file")
++			}
++			if err := n.Command("update-ca-certificates").Run(); err != nil {
++				return errors.Wrap(err, "failed to exec update-ca-certificates")
++			}
++			if err := n.Command("systemctl", "restart", "crio").Run(); err != nil {
++				return errors.Wrap(err, "failed to restart crio")
++			}
++		}
++	}
++
++	// mark success
++	ctx.Status.End(true)
++	return nil
++}
+diff --git a/pkg/cluster/internal/create/create.go b/pkg/cluster/internal/create/create.go
+index 351ba6c7..caae6226 100644
+--- a/pkg/cluster/internal/create/create.go
++++ b/pkg/cluster/internal/create/create.go
+@@ -39,6 +39,11 @@ import (
+ 	"sigs.k8s.io/kind/pkg/cluster/internal/create/actions/kubeadmjoin"
+ 	"sigs.k8s.io/kind/pkg/cluster/internal/create/actions/loadbalancer"
+ 	"sigs.k8s.io/kind/pkg/cluster/internal/create/actions/waitforready"
++	"sigs.k8s.io/kind/pkg/cluster/internal/create/actions/copykubeconfig"
++	"sigs.k8s.io/kind/pkg/cluster/internal/create/actions/runinfocollector"
++	"sigs.k8s.io/kind/pkg/cluster/internal/create/actions/setupcrd"
++	"sigs.k8s.io/kind/pkg/cluster/internal/create/actions/runcontrollers"
++        "sigs.k8s.io/kind/pkg/cluster/internal/create/actions/updatecerts"
+ 	"sigs.k8s.io/kind/pkg/cluster/internal/kubeconfig"
+ )
+ 
+@@ -127,6 +132,14 @@ func Cluster(logger log.Logger, p providers.Provider, opts *ClusterOptions) erro
+ 			kubeadmjoin.NewAction(),                   // run kubeadm join
+ 			waitforready.NewAction(opts.WaitForReady), // wait for cluster readiness
+ 		)
++		// add actions for DCI
++		actionsToRun = append(actionsToRun,
++			updatecerts.NewAction(),                // update certs for private registry
++			copykubeconfig.NewAction(),             // copy kubeconfig for workers
++			runinfocollector.NewAction(),           // run infocollector
++			setupcrd.NewAction(),                   // setup CRDs for DCI
++			runcontrollers.NewAction(),             // run DCI controllers
++		)
+ 	}
+ 
+ 	// run all actions
+diff --git a/pkg/cluster/internal/providers/docker/provision.go b/pkg/cluster/internal/providers/docker/provision.go
+index b2d6bbea..651b43f8 100644
+--- a/pkg/cluster/internal/providers/docker/provision.go
++++ b/pkg/cluster/internal/providers/docker/provision.go
+@@ -226,7 +226,7 @@ func runArgsForNode(node *config.Node, clusterIPFamily config.ClusterIPFamily, n
+ 		"--security-opt", "seccomp=unconfined", // also ignore seccomp
+ 		"--security-opt", "apparmor=unconfined", // also ignore apparmor
+ 		// runtime temporary storage
+-		"--tmpfs", "/tmp", // various things depend on working /tmp
++		"--tmpfs", "/tmp:exec", // various things depend on working /tmp
+ 		"--tmpfs", "/run", // systemd wants a writable /run
+ 		// runtime persistent storage
+ 		// this ensures that E.G. pods, logs etc. are not on the container
+@@ -235,7 +235,7 @@ func runArgsForNode(node *config.Node, clusterIPFamily config.ClusterIPFamily, n
+ 		// (please don't depend on doing this though!)
+ 		"--volume", "/var",
+ 		// some k8s things want to read /lib/modules
+-		"--volume", "/lib/modules:/lib/modules:ro",
++		// "--volume", "/lib/modules:/lib/modules:ro",
+ 		// propagate KIND_EXPERIMENTAL_CONTAINERD_SNAPSHOTTER to the entrypoint script
+ 		"-e", "KIND_EXPERIMENTAL_CONTAINERD_SNAPSHOTTER",
+ 	},

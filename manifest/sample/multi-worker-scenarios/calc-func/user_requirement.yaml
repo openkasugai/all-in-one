@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-requirement 
+  namespace : cpufunc-calcapp
+data:
+  strategy : strategy
+  requestNodeNames : |
+    send:
+      - kind-worker
+    plus:
+      - kind-worker
+    minus:
+      - kind-worker
+    multiply:
+      - kind-worker
+    divide:
+      - kind-worker2
+    average:
+      - kind-worker2
+    rcv:
+      - kind-worker2

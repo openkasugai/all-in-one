@@ -1,0 +1,17 @@
+---
+apiVersion: "k8s.cni.cncf.io/v1"
+kind: NetworkAttachmentDefinition
+metadata:
+  name: kind-worker-config-net-sriov
+  namespace: test01
+  annotations:
+    k8s.v1.cni.cncf.io/resourceName: nvidia.com/mlnx_sriov_netdevice
+spec:
+  config: '{
+    "type": "sriov",
+    "cniVersion": "0.3.1",
+    "name": "kind-worker-net-sriov",
+    "ipam": {
+      "type": "static"
+    }
+  }'

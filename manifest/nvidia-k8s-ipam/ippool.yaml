@@ -1,0 +1,19 @@
+apiVersion: nv-ipam.nvidia.com/v1alpha1
+kind: IPPool
+metadata:
+  name: nv-pool1
+  namespace: kube-system
+spec:
+  subnet: NV_IPAM_SUBNET
+  perNodeBlockSize: NV_IPAM_PER_NODE_BLOCK_SIZE
+  gateway: NV_IPAM_GATEWAY
+  exclusions: # optional
+  - startIP: NV_IPAM_EXCLUDE_START_1
+    endIP: NV_IPAM_EXCLUDE_END_1
+  - startIP: NV_IPAM_EXCLUDE_START_2
+    endIP: NV_IPAM_EXCLUDE_END_2
+  nodeSelector:
+    nodeSelectorTerms:
+    - matchExpressions:
+        - key: node-role.kubernetes.io/control-plane
+          operator: DoesNotExist

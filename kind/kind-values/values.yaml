@@ -1,0 +1,43 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+  image: DCI_NODE_IMAGE_NAME
+  extraMounts:
+    - hostPath: REPO_DIR/build/controller
+      containerPath: /root/controller
+    - hostPath: REPO_DIR/kind/cni-manifest/calico.yaml
+      containerPath: /kind/manifests/default-cni.yaml
+    - hostPath: REPO_DIR/work
+      containerPath: /root/work
+  kubeadmConfigPatches:
+  - |
+    kind: InitConfiguration
+    nodeRegistration:
+      criSocket: unix:///var/run/crio/crio.sock
+- role: worker
+  image: DCI_ACC_IMAGE_NAME
+  extraMounts:
+    - hostPath: REPO_DIR/build/controller
+      containerPath: /root/controller
+    - hostPath: REPO_DIR/work
+      containerPath: /root/work
+  kubeadmConfigPatches:
+  - |
+    kind: JoinConfiguration
+    nodeRegistration:
+      criSocket: unix:///var/run/crio/crio.sock
+- role: worker
+  image: DCI_NODE_IMAGE_NAME
+  extraMounts:
+    - hostPath: REPO_DIR/build/controller
+      containerPath: /root/controller
+    - hostPath: REPO_DIR/work
+      containerPath: /root/work
+  kubeadmConfigPatches:
+  - |
+    kind: JoinConfiguration
+    nodeRegistration:
+      criSocket: unix:///var/run/crio/crio.sock
+networking:
+  podSubnet: 10.100.0.0/16

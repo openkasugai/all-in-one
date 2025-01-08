@@ -1,0 +1,8 @@
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: cpufunc-pool
+  namespace: metallb-system
+spec:
+  addresses:
+  - 172.18.9.0-172.18.9.10

@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: send-video-tool
+  namespace: test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: send-video-tool
+  template:
+    metadata:
+      labels:
+        app: send-video-tool
+    spec:
+      nodeName: kind-worker
+      hostNetwork: true
+      shareProcessNamespace: true
+      containers:
+      - name: send-video-tool
+        image: localhost/send_video_tool:1.0.0
+        command: ["tail", "-f", "/dev/null"]
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - mountPath: /opt/video
+          name: host-video
+      volumes:
+      - name: host-video
+        hostPath:
+          path: /root/work/DATA/video
+          type: Directory

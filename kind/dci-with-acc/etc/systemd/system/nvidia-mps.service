@@ -1,0 +1,9 @@
+[Unit]
+Description = run nvidia-mps for GPU Functions
+
+[Service]
+ExecStart = /bin/bash -lc 'nvidia-cuda-mps-control -d'
+Type = forking
+
+[Install]
+WantedBy = default.target
