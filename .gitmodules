@@ -1,0 +1,3 @@
+[submodule "kind/kind"]
+	path = kind/kind
+	url = https://github.com/kubernetes-sigs/kind
